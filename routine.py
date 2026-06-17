@@ -1,15 +1,14 @@
 """
 Automated routine — Task 2
-Reads Input.xlsx from a local path, validates read fidelity, then processes data.
+1. Reads template files to observe their column structure.
+2. Reads every sheet in Input.xlsx (read fidelity checkpoint).
+3. For each sheet, creates two empty output Excel files matching the template columns.
 
 Prerequisites:
     pip install -r requirements.txt
 
 Usage:
-    Place Input.xlsx in the same directory as this script, then run:
-        python routine.py
-    Or pass a custom path:
-        python routine.py /path/to/Input.xlsx
+    python routine.py
 """
 
 import sys
@@ -17,14 +16,30 @@ from pathlib import Path
 
 import openpyxl
 import pandas as pd
+from openpyxl import Workbook
 
-
-INPUT_FILE = Path(__file__).parent / "Input.xlsx"
+REPO = Path(__file__).parent
+INPUT_FILE              = REPO / "Input.xlsx"
+CAMPAIGN_TEMPLATE       = REPO / "campaign_Otros_Proyectos.xlsx"
+CUSTOMERS_TEMPLATE      = REPO / "customers_Otros_Proyectos.xlsx"
+OUTPUT_DIR              = REPO / "output"
 
 
 # ---------------------------------------------------------------------------
-# CHECKPOINT 1 — Read fidelity
-# Assert every sheet, every header, and exact row counts before processing.
+# CHECKPOINT 0 — Read template structures
+# ---------------------------------------------------------------------------
+
+def read_template_headers(path: Path) -> list[str]:
+    wb = openpyxl.load_workbook(path, read_only=True)
+    ws = wb.worksheets[0]
+    headers = [cell.value for cell in next(ws.iter_rows(max_row=1))]
+    wb.close()
+    print(f"  Template '{path.name}': {headers}")
+    return headers
+
+
+# ---------------------------------------------------------------------------
+# CHECKPOINT 1 — Read fidelity on Input.xlsx
 # ---------------------------------------------------------------------------
 
 def validate_fidelity(path: Path) -> dict[str, pd.DataFrame]:
@@ -64,26 +79,45 @@ def validate_fidelity(path: Path) -> dict[str, pd.DataFrame]:
 
 
 # ---------------------------------------------------------------------------
-# CHECKPOINT 2 — Processing
-# Add your transformation logic below.
+# CHECKPOINT 2 — Create output files
 # ---------------------------------------------------------------------------
 
-def process(sheets: dict[str, pd.DataFrame]) -> None:
-    print("=== Checkpoint 2: Processing ===")
+def slugify(name: str) -> str:
+    return name.replace(" ", "_")
 
-    for sheet_name, df in sheets.items():
-        print(f"\nSheet: '{sheet_name}'")
-        print(df.head())
 
-        # TODO: add your per-sheet processing logic here
+def create_output_file(dest: Path, headers: list[str]) -> None:
+    wb = Workbook()
+    ws = wb.active
+    ws.append(headers)
+    wb.save(dest)
+    print(f"  Created: {dest.name}")
+
+
+def create_outputs(sheets: dict[str, pd.DataFrame],
+                   campaign_headers: list[str],
+                   customers_headers: list[str]) -> None:
+    OUTPUT_DIR.mkdir(exist_ok=True)
+    print(f"=== Checkpoint 2: Creating output files in '{OUTPUT_DIR}' ===\n")
+
+    for sheet_name in sheets:
+        slug = slugify(sheet_name)
+        create_output_file(OUTPUT_DIR / f"campaign_{slug}.xlsx",  campaign_headers)
+        create_output_file(OUTPUT_DIR / f"customers_{slug}.xlsx", customers_headers)
+
+    print(f"\nDone. {len(sheets) * 2} files created in '{OUTPUT_DIR}'.")
+    print("Upload the contents of the output/ folder to SharePoint manually.")
 
 
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    path = Path(sys.argv[1]) if len(sys.argv) > 1 else INPUT_FILE
-    sheets = validate_fidelity(path)
-    process(sheets)
+    print("=== Checkpoint 0: Reading template structures ===")
+    campaign_headers  = read_template_headers(CAMPAIGN_TEMPLATE)
+    customers_headers = read_template_headers(CUSTOMERS_TEMPLATE)
+
+    sheets = validate_fidelity(INPUT_FILE)
+    create_outputs(sheets, campaign_headers, customers_headers)
 
 
 if __name__ == "__main__":
