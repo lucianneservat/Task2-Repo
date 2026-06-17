@@ -1,76 +1,44 @@
 """
 Automated routine — Task 2
-Reads Input.xlsx from SharePoint via Microsoft Graph API, validates read fidelity,
-then processes contact and project data.
+Reads Input.xlsx from a local path, validates read fidelity, then processes data.
 
 Prerequisites:
-    pip install msal httpx openpyxl pandas
+    pip install -r requirements.txt
 
-Required environment variables (set in .env or shell):
-    AZURE_TENANT_ID
-    AZURE_CLIENT_ID
-    AZURE_CLIENT_SECRET
+Usage:
+    Place Input.xlsx in the same directory as this script, then run:
+        python routine.py
+    Or pass a custom path:
+        python routine.py /path/to/Input.xlsx
 """
 
-import os
-import tempfile
+import sys
+from pathlib import Path
 
-import httpx
-import msal
 import openpyxl
 import pandas as pd
-from dotenv import load_dotenv
-
-load_dotenv()
-
-TENANT_ID     = os.environ["AZURE_TENANT_ID"]
-CLIENT_ID     = os.environ["AZURE_CLIENT_ID"]
-CLIENT_SECRET = os.environ["AZURE_CLIENT_SECRET"]
-
-DRIVE_ID = "b!KR22wzNh7EGhNkG9pT8SDmQj3_cA0QpLmYQ10EYyrppYZ0cfEu0SSZYVTa0P-cwb"
-ITEM_ID  = "01GHYZT3XNATTYIS7LPFEIL4WIKYLQOSRU"
-GRAPH    = "https://graph.microsoft.com/v1.0"
 
 
-def get_token() -> str:
-    app = msal.ConfidentialClientApplication(
-        client_id=CLIENT_ID,
-        client_credential=CLIENT_SECRET,
-        authority=f"https://login.microsoftonline.com/{TENANT_ID}",
-    )
-    result = app.acquire_token_for_client(["https://graph.microsoft.com/.default"])
-    if "access_token" not in result:
-        raise RuntimeError(f"Auth failed: {result.get('error_description')}")
-    return result["access_token"]
-
-
-def download_workbook(token: str) -> str:
-    """Download Input.xlsx to a temp file and return its path."""
-    headers = {"Authorization": f"Bearer {token}"}
-    r = httpx.get(
-        f"{GRAPH}/drives/{DRIVE_ID}/items/{ITEM_ID}/content",
-        headers=headers,
-        follow_redirects=True,
-        timeout=60,
-    )
-    r.raise_for_status()
-    tmp = tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False)
-    tmp.write(r.content)
-    tmp.close()
-    return tmp.name
+INPUT_FILE = Path(__file__).parent / "Input.xlsx"
 
 
 # ---------------------------------------------------------------------------
 # CHECKPOINT 1 — Read fidelity
-# Assert we can access every sheet, every header, and exact row counts.
+# Assert every sheet, every header, and exact row counts before processing.
 # ---------------------------------------------------------------------------
 
-def validate_fidelity(path: str) -> dict[str, pd.DataFrame]:
-    """Return a dict of {sheet_name: DataFrame} after asserting structural integrity."""
+def validate_fidelity(path: Path) -> dict[str, pd.DataFrame]:
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Input file not found: {path}\n"
+            "Download Input.xlsx from SharePoint and place it next to routine.py"
+        )
+
     wb = openpyxl.load_workbook(path, read_only=True)
     sheets: dict[str, pd.DataFrame] = {}
 
     print(f"\n=== Checkpoint 1: Read fidelity ===")
+    print(f"File: {path.name}  ({path.stat().st_size:,} bytes)")
     print(f"Worksheets found ({len(wb.sheetnames)}): {wb.sheetnames}\n")
 
     for name in wb.sheetnames:
@@ -113,13 +81,8 @@ def process(sheets: dict[str, pd.DataFrame]) -> None:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    token = get_token()
-    print("Token acquired.")
-
-    tmp_path = download_workbook(token)
-    print(f"Workbook downloaded to: {tmp_path}")
-
-    sheets = validate_fidelity(tmp_path)
+    path = Path(sys.argv[1]) if len(sys.argv) > 1 else INPUT_FILE
+    sheets = validate_fidelity(path)
     process(sheets)
 
 

@@ -1,5 +1,2 @@
-msal
-httpx
 openpyxl
 pandas
-python-dotenv
