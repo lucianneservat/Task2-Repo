@@ -118,54 +118,48 @@ def slugify(name: str) -> str:
     return name.replace(" ", "_")
 
 
-def build_campaign(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
-    records, review = [], []
+def build_campaign(df: pd.DataFrame) -> pd.DataFrame:
+    records = []
     seen: set[str] = set()
 
     for _, row in df.iterrows():
         phone, valid = normalize_phone(row["Números"])
 
-        if not valid:
-            review.append({"review": "review"})
-            continue
+        if valid:
+            if phone in seen:
+                continue
+            seen.add(phone)
 
-        if phone in seen:
-            continue
-
-        seen.add(phone)
         records.append({
-            "number":          phone,
+            "number":          phone if valid else "review",
             "nombre_cliente":  f"{row['Nombre']} {row['Apellidos']}",
             "hubspot_deal_id": str(int(row["Negocio ID"])) if pd.notna(row["Negocio ID"]) else "",
         })
 
-    return pd.DataFrame(records), pd.DataFrame(review)
+    return pd.DataFrame(records)
 
 
-def build_customers(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
-    records, review = [], []
+def build_customers(df: pd.DataFrame) -> pd.DataFrame:
+    records = []
     seen: set[str] = set()
 
     for _, row in df.iterrows():
         phone, valid = normalize_phone(row["Números"])
 
-        if not valid:
-            review.append({"review": "review"})
-            continue
+        if valid:
+            if phone in seen:
+                continue
+            seen.add(phone)
 
-        if phone in seen:
-            continue
-
-        seen.add(phone)
         records.append({
-            "phone":                 phone,
+            "phone":                 phone if valid else "review",
             "firstname":             row["Nombre"],
             "lastname":              row["Apellidos"],
             "email":                 None,
             "voice_model_selection": row["Nombre del proyecto"],
         })
 
-    return pd.DataFrame(records), pd.DataFrame(review)
+    return pd.DataFrame(records)
 
 
 def save_excel(df: pd.DataFrame, path: Path) -> None:
@@ -184,17 +178,8 @@ def create_outputs(sheets: dict[str, pd.DataFrame]) -> None:
 
     for sheet_name, df in sheets.items():
         slug = slugify(sheet_name)
-
-        campaign_df,  campaign_review  = build_campaign(df)
-        customers_df, customers_review = build_customers(df)
-
-        save_excel(campaign_df,  OUTPUT_DIR / f"campaign_{slug}.xlsx")
-        save_excel(customers_df, OUTPUT_DIR / f"customers_{slug}.xlsx")
-
-        if not campaign_review.empty:
-            save_excel(campaign_review,  OUTPUT_DIR / f"campaign_{slug}.review.xlsx")
-        if not customers_review.empty:
-            save_excel(customers_review, OUTPUT_DIR / f"customers_{slug}.review.xlsx")
+        save_excel(build_campaign(df),  OUTPUT_DIR / f"campaign_{slug}.xlsx")
+        save_excel(build_customers(df), OUTPUT_DIR / f"customers_{slug}.xlsx")
 
     print(f"\nDone. Upload the contents of output/ to SharePoint manually.")
 
