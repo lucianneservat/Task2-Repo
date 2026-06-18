@@ -2,27 +2,40 @@
 Automated routine — Task 2
 1. Reads template files to observe their column structure.
 2. Reads every sheet in Input.xlsx (read fidelity checkpoint).
-3. For each sheet, creates two empty output Excel files matching the template columns.
+3. For each sheet, creates two output Excel files with mapped columns.
 
 Prerequisites:
-    pip install -r requirements.txt
+    pip install openpyxl pandas
 
 Usage:
     python routine.py
 """
 
-import sys
 from pathlib import Path
 
 import openpyxl
 import pandas as pd
 from openpyxl import Workbook
 
-REPO = Path(__file__).parent
+REPO                    = Path(__file__).parent
 INPUT_FILE              = REPO / "Input.xlsx"
 CAMPAIGN_TEMPLATE       = REPO / "campaign_Otros_Proyectos.xlsx"
 CUSTOMERS_TEMPLATE      = REPO / "customers_Otros_Proyectos.xlsx"
 OUTPUT_DIR              = REPO / "output"
+
+CAMPAIGN_MAP = {
+    "number":           "Números",
+    "nombre_cliente":   "Nombre",
+    "hubspot_deal_id":  "Negocio ID",
+}
+
+CUSTOMERS_MAP = {
+    "phone":                  "Números",
+    "firstname":              "Nombre",
+    "lastname":               "Apellidos",
+    "email":                  None,
+    "voice_model_selection":  "Nombre del proyecto",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -66,8 +79,7 @@ def validate_fidelity(path: Path) -> dict[str, pd.DataFrame]:
             f"Blank header cell in sheet '{name}': {headers}"
         )
 
-        data_rows = rows[1:]
-        df = pd.DataFrame(data_rows, columns=headers)
+        df = pd.DataFrame(rows[1:], columns=headers)
         sheets[name] = df
 
         print(f"  ✅ '{name}'")
@@ -79,45 +91,57 @@ def validate_fidelity(path: Path) -> dict[str, pd.DataFrame]:
 
 
 # ---------------------------------------------------------------------------
-# CHECKPOINT 2 — Create output files
+# CHECKPOINT 2 — Map columns and build output files
 # ---------------------------------------------------------------------------
 
 def slugify(name: str) -> str:
     return name.replace(" ", "_")
 
 
-def create_output_file(dest: Path, headers: list[str]) -> None:
+def build_output(df: pd.DataFrame, column_map: dict[str, str | None]) -> pd.DataFrame:
+    out = {}
+    for output_col, input_col in column_map.items():
+        out[output_col] = df[input_col] if input_col else None
+    return pd.DataFrame(out)
+
+
+def save_excel(df: pd.DataFrame, path: Path) -> None:
     wb = Workbook()
     ws = wb.active
-    ws.append(headers)
-    wb.save(dest)
-    print(f"  Created: {dest.name}")
+    ws.append(list(df.columns))
+    for row in df.itertuples(index=False, name=None):
+        ws.append(list(row))
+    wb.save(path)
+    print(f"  Created: {path.name}  ({len(df)} rows)")
 
 
-def create_outputs(sheets: dict[str, pd.DataFrame],
-                   campaign_headers: list[str],
-                   customers_headers: list[str]) -> None:
+def create_outputs(sheets: dict[str, pd.DataFrame]) -> None:
     OUTPUT_DIR.mkdir(exist_ok=True)
-    print(f"=== Checkpoint 2: Creating output files in '{OUTPUT_DIR}' ===\n")
+    print(f"=== Checkpoint 2: Building output files in '{OUTPUT_DIR}' ===\n")
 
-    for sheet_name in sheets:
+    for sheet_name, df in sheets.items():
         slug = slugify(sheet_name)
-        create_output_file(OUTPUT_DIR / f"campaign_{slug}.xlsx",  campaign_headers)
-        create_output_file(OUTPUT_DIR / f"customers_{slug}.xlsx", customers_headers)
 
-    print(f"\nDone. {len(sheets) * 2} files created in '{OUTPUT_DIR}'.")
-    print("Upload the contents of the output/ folder to SharePoint manually.")
+        campaign_df  = build_output(df, CAMPAIGN_MAP)
+        customers_df = build_output(df, CUSTOMERS_MAP)
+
+        save_excel(campaign_df,  OUTPUT_DIR / f"campaign_{slug}.xlsx")
+        save_excel(customers_df, OUTPUT_DIR / f"customers_{slug}.xlsx")
+
+    total = len(sheets) * 2
+    print(f"\nDone. {total} files created.")
+    print("Upload the contents of output/ to SharePoint manually.")
 
 
 # ---------------------------------------------------------------------------
 
 def main() -> None:
     print("=== Checkpoint 0: Reading template structures ===")
-    campaign_headers  = read_template_headers(CAMPAIGN_TEMPLATE)
-    customers_headers = read_template_headers(CUSTOMERS_TEMPLATE)
+    read_template_headers(CAMPAIGN_TEMPLATE)
+    read_template_headers(CUSTOMERS_TEMPLATE)
 
     sheets = validate_fidelity(INPUT_FILE)
-    create_outputs(sheets, campaign_headers, customers_headers)
+    create_outputs(sheets)
 
 
 if __name__ == "__main__":
