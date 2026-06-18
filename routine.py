@@ -3,7 +3,8 @@ Automated routine — Task 2
 1. Reads template files to observe their column structure.
 2. Reads every sheet in Input.xlsx (read fidelity checkpoint).
 3. For each sheet, normalizes phone numbers, de-duplicates, maps columns,
-   and builds two output Excel files. Bad rows go to .review files.
+   and builds two output Excel files. Ambiguous/invalid phones are replaced
+   with the word 'review' in the phone column.
 
 Prerequisites:
     pip install openpyxl pandas
@@ -82,20 +83,19 @@ def validate_fidelity(path: Path) -> dict[str, pd.DataFrame]:
 # Phone normalization
 # ---------------------------------------------------------------------------
 
-def normalize_phone(raw) -> tuple[str | None, str | None]:
+def normalize_phone(raw) -> str:
     """
-    Returns (normalized_digits, rejection_reason).
-    Exactly one of the two values is always None.
+    Returns normalized digits, or 'review' if the number is invalid.
 
     Rules:
     - Strip all non-digit characters.
     - 0057 prefix → strip the leading 00.
-    - 12 digits starting with 573 → valid Colombian mobile with country code.
-    - 10 digits starting with 3   → prepend 57 → valid.
-    - Everything else             → quarantine with a reason.
+    - 12 digits starting with 573 → valid, return as-is.
+    - 10 digits starting with 3   → prepend 57, return.
+    - Everything else             → return 'review'.
     """
     if pd.isna(raw) or str(raw).strip() in ("", "None"):
-        return None, "empty"
+        return "review"
 
     digits = re.sub(r"\D", "", str(raw))
 
@@ -103,25 +103,12 @@ def normalize_phone(raw) -> tuple[str | None, str | None]:
         digits = digits[2:]
 
     if len(digits) == 12 and digits.startswith("573"):
-        return digits, None
+        return digits
 
     if len(digits) == 10 and digits.startswith("3"):
-        return "57" + digits, None
+        return "57" + digits
 
-    if len(digits) == 0:
-        return None, "no digits found"
-    if len(digits) < 10:
-        return None, f"too short ({len(digits)} digits)"
-    if len(digits) > 12:
-        return None, f"too long ({len(digits)} digits)"
-    if len(digits) == 10 and not digits.startswith("3"):
-        return None, "non-mobile (10 digits, does not start with 3)"
-    if len(digits) == 11:
-        return None, "ambiguous length (11 digits)"
-    if len(digits) == 12 and not digits.startswith("573"):
-        return None, "invalid country code"
-
-    return None, f"ambiguous ({len(digits)} digits)"
+    return "review"
 
 
 # ---------------------------------------------------------------------------
@@ -132,47 +119,39 @@ def slugify(name: str) -> str:
     return name.replace(" ", "_")
 
 
-def build_campaign(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
-    records, review = [], []
+def build_campaign(df: pd.DataFrame) -> pd.DataFrame:
+    records = []
     seen: set[str] = set()
 
     for _, row in df.iterrows():
-        phone, reason = normalize_phone(row["Números"])
+        phone = normalize_phone(row["Números"])
 
-        if reason:
-            review.append({"review": "review"})
-            continue
+        if phone != "review":
+            if phone in seen:
+                continue
+            seen.add(phone)
 
-        if phone in seen:
-            review.append({"review": "review"})
-            continue
-
-        seen.add(phone)
         records.append({
             "number":          phone,
             "nombre_cliente":  f"{row['Nombre']} {row['Apellidos']}",
             "hubspot_deal_id": str(int(row["Negocio ID"])) if pd.notna(row["Negocio ID"]) else "",
         })
 
-    return pd.DataFrame(records), pd.DataFrame(review)
+    return pd.DataFrame(records)
 
 
-def build_customers(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
-    records, review = [], []
+def build_customers(df: pd.DataFrame) -> pd.DataFrame:
+    records = []
     seen: set[str] = set()
 
     for _, row in df.iterrows():
-        phone, reason = normalize_phone(row["Números"])
+        phone = normalize_phone(row["Números"])
 
-        if reason:
-            review.append({"review": "review"})
-            continue
+        if phone != "review":
+            if phone in seen:
+                continue
+            seen.add(phone)
 
-        if phone in seen:
-            review.append({"review": "review"})
-            continue
-
-        seen.add(phone)
         records.append({
             "phone":                 phone,
             "firstname":             row["Nombre"],
@@ -181,7 +160,7 @@ def build_customers(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
             "voice_model_selection": row["Nombre del proyecto"],
         })
 
-    return pd.DataFrame(records), pd.DataFrame(review)
+    return pd.DataFrame(records)
 
 
 def save_excel(df: pd.DataFrame, path: Path) -> None:
@@ -200,17 +179,8 @@ def create_outputs(sheets: dict[str, pd.DataFrame]) -> None:
 
     for sheet_name, df in sheets.items():
         slug = slugify(sheet_name)
-
-        campaign_df,  campaign_review  = build_campaign(df)
-        customers_df, customers_review = build_customers(df)
-
-        save_excel(campaign_df,  OUTPUT_DIR / f"campaign_{slug}.xlsx")
-        save_excel(customers_df, OUTPUT_DIR / f"customers_{slug}.xlsx")
-
-        if not campaign_review.empty:
-            save_excel(campaign_review,  OUTPUT_DIR / f"campaign_{slug}.review.xlsx")
-        if not customers_review.empty:
-            save_excel(customers_review, OUTPUT_DIR / f"customers_{slug}.review.xlsx")
+        save_excel(build_campaign(df),  OUTPUT_DIR / f"campaign_{slug}.xlsx")
+        save_excel(build_customers(df), OUTPUT_DIR / f"customers_{slug}.xlsx")
 
     print(f"\nDone. Upload the contents of output/ to SharePoint manually.")
 
