@@ -6,6 +6,15 @@ Automated routine — Task 2
    campaign and customers output files from the same valid row set.
    Bad-phone rows go to .review files.
 
+Idempotency design:
+    This routine runs on a schedule (poll), not on a file-change event,
+    because SharePoint connectors do not expose a "file created/updated"
+    trigger. To avoid reprocessing unchanged input on every scheduled run,
+    a SHA-256 hash of Input.xlsx is stored in processed/Input.xlsx.hash
+    after each successful run. On the next run, if the hash matches the
+    stored value the routine exits early. If the file has changed (or no
+    marker exists yet), the routine processes normally and updates the marker.
+
 Prerequisites:
     pip install openpyxl pandas
 
@@ -13,6 +22,7 @@ Usage:
     python routine.py
 """
 
+import hashlib
 import re
 from pathlib import Path
 
@@ -25,6 +35,27 @@ INPUT_FILE         = REPO / "Input.xlsx"
 CAMPAIGN_TEMPLATE  = REPO / "campaign_Otros_Proyectos.xlsx"
 CUSTOMERS_TEMPLATE = REPO / "customers_Otros_Proyectos.xlsx"
 OUTPUT_DIR         = REPO / "output"
+PROCESSED_DIR      = REPO / "processed"
+HASH_FILE          = PROCESSED_DIR / "Input.xlsx.hash"
+
+
+# ---------------------------------------------------------------------------
+# Idempotency helpers
+# ---------------------------------------------------------------------------
+
+def file_hash(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def already_processed(path: Path) -> bool:
+    if not HASH_FILE.exists():
+        return False
+    return HASH_FILE.read_text().strip() == file_hash(path)
+
+
+def mark_processed(path: Path) -> None:
+    PROCESSED_DIR.mkdir(exist_ok=True)
+    HASH_FILE.write_text(file_hash(path))
 
 
 # ---------------------------------------------------------------------------
@@ -253,6 +284,10 @@ def create_outputs(sheets: dict[str, pd.DataFrame], voice_lookup: dict[str, str]
 # ---------------------------------------------------------------------------
 
 def main() -> None:
+    if already_processed(INPUT_FILE):
+        print("Input.xlsx unchanged since last run — nothing to do.")
+        return
+
     print("=== Checkpoint 0: Reading template structures ===")
     read_template_headers(CAMPAIGN_TEMPLATE)
     read_template_headers(CUSTOMERS_TEMPLATE)
@@ -260,6 +295,8 @@ def main() -> None:
     voice_lookup = load_voice_model_lookup(CUSTOMERS_TEMPLATE)
     sheets = validate_fidelity(INPUT_FILE)
     create_outputs(sheets, voice_lookup)
+    mark_processed(INPUT_FILE)
+    print("Marker updated: processed/Input.xlsx.hash")
 
 
 if __name__ == "__main__":
