@@ -3,8 +3,8 @@ Automated routine — Task 2
 1. Reads template files to observe their column structure.
 2. Reads every sheet in Input.xlsx (read fidelity checkpoint).
 3. For each sheet, normalizes phone numbers, de-duplicates, maps columns,
-   and builds two output Excel files. Ambiguous/invalid phones are replaced
-   with the word 'review' in the phone column.
+   and builds two output Excel files. Ambiguous/invalid phones are quarantined
+   to separate .review files.
 
 Prerequisites:
     pip install openpyxl pandas
@@ -83,19 +83,18 @@ def validate_fidelity(path: Path) -> dict[str, pd.DataFrame]:
 # Phone normalization
 # ---------------------------------------------------------------------------
 
-def normalize_phone(raw) -> str:
+def normalize_phone(raw) -> tuple[str | None, bool]:
     """
-    Returns normalized digits, or 'review' if the number is invalid.
-
+    Returns (normalized_digits, valid).
     Rules:
     - Strip all non-digit characters.
     - 0057 prefix → strip the leading 00.
     - 12 digits starting with 573 → valid, return as-is.
     - 10 digits starting with 3   → prepend 57, return.
-    - Everything else             → return 'review'.
+    - Everything else             → invalid, quarantine to .review.
     """
     if pd.isna(raw) or str(raw).strip() in ("", "None"):
-        return "review"
+        return None, False
 
     digits = re.sub(r"\D", "", str(raw))
 
@@ -103,12 +102,12 @@ def normalize_phone(raw) -> str:
         digits = digits[2:]
 
     if len(digits) == 12 and digits.startswith("573"):
-        return digits
+        return digits, True
 
     if len(digits) == 10 and digits.startswith("3"):
-        return "57" + digits
+        return "57" + digits, True
 
-    return "review"
+    return None, False
 
 
 # ---------------------------------------------------------------------------
@@ -119,39 +118,45 @@ def slugify(name: str) -> str:
     return name.replace(" ", "_")
 
 
-def build_campaign(df: pd.DataFrame) -> pd.DataFrame:
-    records = []
+def build_campaign(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    records, review = [], []
     seen: set[str] = set()
 
     for _, row in df.iterrows():
-        phone = normalize_phone(row["Números"])
+        phone, valid = normalize_phone(row["Números"])
 
-        if phone != "review":
-            if phone in seen:
-                continue
-            seen.add(phone)
+        if not valid:
+            review.append({"review": "review"})
+            continue
 
+        if phone in seen:
+            continue
+
+        seen.add(phone)
         records.append({
             "number":          phone,
             "nombre_cliente":  f"{row['Nombre']} {row['Apellidos']}",
             "hubspot_deal_id": str(int(row["Negocio ID"])) if pd.notna(row["Negocio ID"]) else "",
         })
 
-    return pd.DataFrame(records)
+    return pd.DataFrame(records), pd.DataFrame(review)
 
 
-def build_customers(df: pd.DataFrame) -> pd.DataFrame:
-    records = []
+def build_customers(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    records, review = [], []
     seen: set[str] = set()
 
     for _, row in df.iterrows():
-        phone = normalize_phone(row["Números"])
+        phone, valid = normalize_phone(row["Números"])
 
-        if phone != "review":
-            if phone in seen:
-                continue
-            seen.add(phone)
+        if not valid:
+            review.append({"review": "review"})
+            continue
 
+        if phone in seen:
+            continue
+
+        seen.add(phone)
         records.append({
             "phone":                 phone,
             "firstname":             row["Nombre"],
@@ -160,7 +165,7 @@ def build_customers(df: pd.DataFrame) -> pd.DataFrame:
             "voice_model_selection": row["Nombre del proyecto"],
         })
 
-    return pd.DataFrame(records)
+    return pd.DataFrame(records), pd.DataFrame(review)
 
 
 def save_excel(df: pd.DataFrame, path: Path) -> None:
@@ -179,8 +184,17 @@ def create_outputs(sheets: dict[str, pd.DataFrame]) -> None:
 
     for sheet_name, df in sheets.items():
         slug = slugify(sheet_name)
-        save_excel(build_campaign(df),  OUTPUT_DIR / f"campaign_{slug}.xlsx")
-        save_excel(build_customers(df), OUTPUT_DIR / f"customers_{slug}.xlsx")
+
+        campaign_df,  campaign_review  = build_campaign(df)
+        customers_df, customers_review = build_customers(df)
+
+        save_excel(campaign_df,  OUTPUT_DIR / f"campaign_{slug}.xlsx")
+        save_excel(customers_df, OUTPUT_DIR / f"customers_{slug}.xlsx")
+
+        if not campaign_review.empty:
+            save_excel(campaign_review,  OUTPUT_DIR / f"campaign_{slug}.review.xlsx")
+        if not customers_review.empty:
+            save_excel(customers_review, OUTPUT_DIR / f"customers_{slug}.review.xlsx")
 
     print(f"\nDone. Upload the contents of output/ to SharePoint manually.")
 
