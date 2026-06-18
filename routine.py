@@ -2,7 +2,8 @@
 Automated routine — Task 2
 1. Reads template files to observe their column structure.
 2. Reads every sheet in Input.xlsx (read fidelity checkpoint).
-3. For each sheet, creates two output Excel files with mapped columns.
+3. For each sheet, normalizes phone numbers, de-duplicates, maps columns,
+   and builds two output Excel files. Bad rows go to .review files.
 
 Prerequisites:
     pip install openpyxl pandas
@@ -11,17 +12,18 @@ Usage:
     python routine.py
 """
 
+import re
 from pathlib import Path
 
 import openpyxl
 import pandas as pd
 from openpyxl import Workbook
 
-REPO                    = Path(__file__).parent
-INPUT_FILE              = REPO / "Input.xlsx"
-CAMPAIGN_TEMPLATE       = REPO / "campaign_Otros_Proyectos.xlsx"
-CUSTOMERS_TEMPLATE      = REPO / "customers_Otros_Proyectos.xlsx"
-OUTPUT_DIR              = REPO / "output"
+REPO               = Path(__file__).parent
+INPUT_FILE         = REPO / "Input.xlsx"
+CAMPAIGN_TEMPLATE  = REPO / "campaign_Otros_Proyectos.xlsx"
+CUSTOMERS_TEMPLATE = REPO / "customers_Otros_Proyectos.xlsx"
+OUTPUT_DIR         = REPO / "output"
 
 
 # ---------------------------------------------------------------------------
@@ -77,31 +79,109 @@ def validate_fidelity(path: Path) -> dict[str, pd.DataFrame]:
 
 
 # ---------------------------------------------------------------------------
-# CHECKPOINT 2 — Map columns and build output files
+# Phone normalization
+# ---------------------------------------------------------------------------
+
+def normalize_phone(raw) -> tuple[str | None, str | None]:
+    """
+    Returns (normalized_digits, rejection_reason).
+    Exactly one of the two values is always None.
+
+    Rules:
+    - Strip all non-digit characters.
+    - 0057 prefix → strip the leading 00.
+    - 12 digits starting with 573 → valid Colombian mobile with country code.
+    - 10 digits starting with 3   → prepend 57 → valid.
+    - Everything else             → quarantine with a reason.
+    """
+    if pd.isna(raw) or str(raw).strip() in ("", "None"):
+        return None, "empty"
+
+    digits = re.sub(r"\D", "", str(raw))
+
+    if digits.startswith("0057"):
+        digits = digits[2:]
+
+    if len(digits) == 12 and digits.startswith("573"):
+        return digits, None
+
+    if len(digits) == 10 and digits.startswith("3"):
+        return "57" + digits, None
+
+    if len(digits) == 0:
+        return None, "no digits found"
+    if len(digits) < 10:
+        return None, f"too short ({len(digits)} digits)"
+    if len(digits) > 12:
+        return None, f"too long ({len(digits)} digits)"
+    if len(digits) == 10 and not digits.startswith("3"):
+        return None, "non-mobile (10 digits, does not start with 3)"
+    if len(digits) == 11:
+        return None, "ambiguous length (11 digits)"
+    if len(digits) == 12 and not digits.startswith("573"):
+        return None, "invalid country code"
+
+    return None, f"ambiguous ({len(digits)} digits)"
+
+
+# ---------------------------------------------------------------------------
+# CHECKPOINT 2 — Map columns, normalize phones, build output files
 # ---------------------------------------------------------------------------
 
 def slugify(name: str) -> str:
     return name.replace(" ", "_")
 
 
-def build_campaign(df: pd.DataFrame) -> pd.DataFrame:
-    return pd.DataFrame({
-        "number":          df["Números"],
-        "nombre_cliente":  df["Nombre"].astype(str) + " " + df["Apellidos"].astype(str),
-        "hubspot_deal_id": df["Negocio ID"].apply(
-                               lambda x: str(int(x)) if pd.notna(x) else ""
-                           ),
-    })
+def build_campaign(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    records, review = [], []
+    seen: set[str] = set()
+
+    for _, row in df.iterrows():
+        phone, reason = normalize_phone(row["Números"])
+
+        if reason:
+            review.append({**row.to_dict(), "review_reason": reason})
+            continue
+
+        if phone in seen:
+            review.append({**row.to_dict(), "review_reason": "duplicate"})
+            continue
+
+        seen.add(phone)
+        records.append({
+            "number":          phone,
+            "nombre_cliente":  f"{row['Nombre']} {row['Apellidos']}",
+            "hubspot_deal_id": str(int(row["Negocio ID"])) if pd.notna(row["Negocio ID"]) else "",
+        })
+
+    return pd.DataFrame(records), pd.DataFrame(review)
 
 
-def build_customers(df: pd.DataFrame) -> pd.DataFrame:
-    return pd.DataFrame({
-        "phone":                 df["Números"],
-        "firstname":             df["Nombre"],
-        "lastname":              df["Apellidos"],
-        "email":                 None,
-        "voice_model_selection": df["Nombre del proyecto"],  # TODO: replace with department column
-    })
+def build_customers(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    records, review = [], []
+    seen: set[str] = set()
+
+    for _, row in df.iterrows():
+        phone, reason = normalize_phone(row["Números"])
+
+        if reason:
+            review.append({**row.to_dict(), "review_reason": reason})
+            continue
+
+        if phone in seen:
+            review.append({**row.to_dict(), "review_reason": "duplicate"})
+            continue
+
+        seen.add(phone)
+        records.append({
+            "phone":                 phone,
+            "firstname":             row["Nombre"],
+            "lastname":              row["Apellidos"],
+            "email":                 None,
+            "voice_model_selection": row["Nombre del proyecto"],
+        })
+
+    return pd.DataFrame(records), pd.DataFrame(review)
 
 
 def save_excel(df: pd.DataFrame, path: Path) -> None:
@@ -121,15 +201,18 @@ def create_outputs(sheets: dict[str, pd.DataFrame]) -> None:
     for sheet_name, df in sheets.items():
         slug = slugify(sheet_name)
 
-        campaign_df  = build_campaign(df)
-        customers_df = build_customers(df)
+        campaign_df,  campaign_review  = build_campaign(df)
+        customers_df, customers_review = build_customers(df)
 
         save_excel(campaign_df,  OUTPUT_DIR / f"campaign_{slug}.xlsx")
         save_excel(customers_df, OUTPUT_DIR / f"customers_{slug}.xlsx")
 
-    total = len(sheets) * 2
-    print(f"\nDone. {total} files created.")
-    print("Upload the contents of output/ to SharePoint manually.")
+        if not campaign_review.empty:
+            save_excel(campaign_review,  OUTPUT_DIR / f"campaign_{slug}.review.xlsx")
+        if not customers_review.empty:
+            save_excel(customers_review, OUTPUT_DIR / f"customers_{slug}.review.xlsx")
+
+    print(f"\nDone. Upload the contents of output/ to SharePoint manually.")
 
 
 # ---------------------------------------------------------------------------
