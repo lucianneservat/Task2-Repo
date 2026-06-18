@@ -140,11 +140,11 @@ def build_campaign(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
         phone, reason = normalize_phone(row["Números"])
 
         if reason:
-            review.append(row.to_dict())
+            review.append({"review": "review"})
             continue
 
         if phone in seen:
-            review.append(row.to_dict())
+            review.append({"review": "review"})
             continue
 
         seen.add(phone)
@@ -165,11 +165,11 @@ def build_customers(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
         phone, reason = normalize_phone(row["Números"])
 
         if reason:
-            review.append(row.to_dict())
+            review.append({"review": "review"})
             continue
 
         if phone in seen:
-            review.append(row.to_dict())
+            review.append({"review": "review"})
             continue
 
         seen.add(phone)
