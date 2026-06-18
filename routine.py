@@ -23,20 +23,6 @@ CAMPAIGN_TEMPLATE       = REPO / "campaign_Otros_Proyectos.xlsx"
 CUSTOMERS_TEMPLATE      = REPO / "customers_Otros_Proyectos.xlsx"
 OUTPUT_DIR              = REPO / "output"
 
-CAMPAIGN_MAP = {
-    "number":           "Números",
-    "nombre_cliente":   "Nombre",
-    "hubspot_deal_id":  "Negocio ID",
-}
-
-CUSTOMERS_MAP = {
-    "phone":                  "Números",
-    "firstname":              "Nombre",
-    "lastname":               "Apellidos",
-    "email":                  None,
-    "voice_model_selection":  "Nombre del proyecto",
-}
-
 
 # ---------------------------------------------------------------------------
 # CHECKPOINT 0 — Read template structures
@@ -98,11 +84,24 @@ def slugify(name: str) -> str:
     return name.replace(" ", "_")
 
 
-def build_output(df: pd.DataFrame, column_map: dict[str, str | None]) -> pd.DataFrame:
-    out = {}
-    for output_col, input_col in column_map.items():
-        out[output_col] = df[input_col] if input_col else None
-    return pd.DataFrame(out)
+def build_campaign(df: pd.DataFrame) -> pd.DataFrame:
+    return pd.DataFrame({
+        "number":          df["Números"],
+        "nombre_cliente":  df["Nombre"].astype(str) + " " + df["Apellidos"].astype(str),
+        "hubspot_deal_id": df["Negocio ID"].apply(
+                               lambda x: str(int(x)) if pd.notna(x) else ""
+                           ),
+    })
+
+
+def build_customers(df: pd.DataFrame) -> pd.DataFrame:
+    return pd.DataFrame({
+        "phone":                 df["Números"],
+        "firstname":             df["Nombre"],
+        "lastname":              df["Apellidos"],
+        "email":                 None,
+        "voice_model_selection": df["Nombre del proyecto"],  # TODO: replace with department column
+    })
 
 
 def save_excel(df: pd.DataFrame, path: Path) -> None:
@@ -122,8 +121,8 @@ def create_outputs(sheets: dict[str, pd.DataFrame]) -> None:
     for sheet_name, df in sheets.items():
         slug = slugify(sheet_name)
 
-        campaign_df  = build_output(df, CAMPAIGN_MAP)
-        customers_df = build_output(df, CUSTOMERS_MAP)
+        campaign_df  = build_campaign(df)
+        customers_df = build_customers(df)
 
         save_excel(campaign_df,  OUTPUT_DIR / f"campaign_{slug}.xlsx")
         save_excel(customers_df, OUTPUT_DIR / f"customers_{slug}.xlsx")
