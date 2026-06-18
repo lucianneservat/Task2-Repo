@@ -68,7 +68,7 @@ def validate_fidelity(path: Path) -> dict[str, pd.DataFrame]:
             f"Blank header cell in sheet '{name}': {headers}"
         )
 
-        df = pd.DataFrame(rows[1:], columns=headers)
+        df = pd.DataFrame(rows[1:], columns=headers).dropna(how="all")
         sheets[name] = df
 
         print(f"  ✅ '{name}'")
@@ -131,50 +131,56 @@ def load_voice_model_lookup(path: Path) -> dict[str, str]:
     }
 
 
-def build_campaign(df: pd.DataFrame) -> pd.DataFrame:
-    records = []
+def build_campaign(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    records, review = [], []
     seen: set[str] = set()
 
     for _, row in df.iterrows():
         phone, valid = normalize_phone(row["Números"])
-
-        if not valid:
-            continue
-        if phone in seen:
-            continue
-        seen.add(phone)
-
-        records.append({
-            "number":          phone,
-            "nombre_cliente":  f"{row['Nombre']} {row['Apellidos']}",
+        raw_phone = str(row["Números"]) if pd.notna(row["Números"]) else ""
+        nombre    = str(row["Nombre"])   if pd.notna(row["Nombre"])   else ""
+        apellidos = str(row["Apellidos"]) if pd.notna(row["Apellidos"]) else ""
+        mapped = {
+            "number":          phone if valid else raw_phone,
+            "nombre_cliente":  f"{nombre} {apellidos}".strip(),
             "hubspot_deal_id": str(int(row["Negocio ID"])) if pd.notna(row["Negocio ID"]) else "",
-        })
-
-    return pd.DataFrame(records)
-
-
-def build_customers(df: pd.DataFrame, voice_lookup: dict[str, str]) -> pd.DataFrame:
-    records = []
-    seen: set[str] = set()
-
-    for _, row in df.iterrows():
-        phone, valid = normalize_phone(row["Números"])
+        }
 
         if not valid:
+            review.append(mapped)
             continue
         if phone in seen:
             continue
         seen.add(phone)
+        records.append(mapped)
 
-        records.append({
-            "phone":                 phone,
-            "firstname":             row["Nombre"],
-            "lastname":              row["Apellidos"],
+    return pd.DataFrame(records), pd.DataFrame(review)
+
+
+def build_customers(df: pd.DataFrame, voice_lookup: dict[str, str]) -> tuple[pd.DataFrame, pd.DataFrame]:
+    records, review = [], []
+    seen: set[str] = set()
+
+    for _, row in df.iterrows():
+        phone, valid = normalize_phone(row["Números"])
+        raw_phone = str(row["Números"]) if pd.notna(row["Números"]) else ""
+        mapped = {
+            "phone":                 phone if valid else raw_phone,
+            "firstname":             row["Nombre"] if pd.notna(row["Nombre"]) else "",
+            "lastname":              row["Apellidos"] if pd.notna(row["Apellidos"]) else "",
             "email":                 None,
-            "voice_model_selection": voice_lookup.get(phone),
-        })
+            "voice_model_selection": voice_lookup.get(phone) if valid else None,
+        }
 
-    return pd.DataFrame(records)
+        if not valid:
+            review.append(mapped)
+            continue
+        if phone in seen:
+            continue
+        seen.add(phone)
+        records.append(mapped)
+
+    return pd.DataFrame(records), pd.DataFrame(review)
 
 
 def save_excel(df: pd.DataFrame, path: Path) -> None:
@@ -193,8 +199,17 @@ def create_outputs(sheets: dict[str, pd.DataFrame], voice_lookup: dict[str, str]
 
     for sheet_name, df in sheets.items():
         slug = slugify(sheet_name)
-        save_excel(build_campaign(df),                   OUTPUT_DIR / f"campaign_{slug}.xlsx")
-        save_excel(build_customers(df, voice_lookup),    OUTPUT_DIR / f"customers_{slug}.xlsx")
+
+        campaign_df,  campaign_review  = build_campaign(df)
+        customers_df, customers_review = build_customers(df, voice_lookup)
+
+        save_excel(campaign_df,  OUTPUT_DIR / f"campaign_{slug}.xlsx")
+        save_excel(customers_df, OUTPUT_DIR / f"customers_{slug}.xlsx")
+
+        if not campaign_review.empty:
+            save_excel(campaign_review,  OUTPUT_DIR / f"campaign_{slug}.review.xlsx")
+        if not customers_review.empty:
+            save_excel(customers_review, OUTPUT_DIR / f"customers_{slug}.review.xlsx")
 
     print(f"\nDone. Upload the contents of output/ to SharePoint manually.")
 
