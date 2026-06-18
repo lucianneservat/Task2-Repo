@@ -87,6 +87,7 @@ def normalize_phone(raw) -> tuple[str | None, bool]:
     """
     Returns (normalized_digits, valid).
     Rules:
+    - Convert float to int first to avoid '573124457430.0' adding a spurious digit.
     - Strip all non-digit characters.
     - 0057 prefix → strip the leading 00.
     - 12 digits starting with 573 → valid, return as-is.
@@ -95,6 +96,9 @@ def normalize_phone(raw) -> tuple[str | None, bool]:
     """
     if pd.isna(raw) or str(raw).strip() in ("", "None"):
         return None, False
+
+    if isinstance(raw, float) and raw.is_integer():
+        raw = int(raw)
 
     digits = re.sub(r"\D", "", str(raw))
 
@@ -119,16 +123,20 @@ def slugify(name: str) -> str:
 
 
 def load_voice_model_lookup(path: Path) -> dict[str, str]:
-    """Build phone → voice_model_selection lookup from customers template."""
+    """Build normalized_phone → voice_model_selection lookup from customers template."""
     wb = openpyxl.load_workbook(path, read_only=True)
     ws = wb.worksheets[0]
     rows = list(ws.iter_rows(values_only=True))
     wb.close()
-    return {
-        str(row[0]): row[4]
-        for row in rows[1:]
-        if row[0] is not None and row[4] is not None
-    }
+    lookup = {}
+    for row in rows[1:]:
+        phone_raw, voice = row[0], row[4]
+        if phone_raw is None or voice is None:
+            continue
+        phone, valid = normalize_phone(phone_raw)
+        if valid:
+            lookup[phone] = voice
+    return lookup
 
 
 def build_campaign(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -150,6 +158,7 @@ def build_campaign(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
             review.append(mapped)
             continue
         if phone in seen:
+            review.append(mapped)
             continue
         seen.add(phone)
         records.append(mapped)
@@ -176,6 +185,7 @@ def build_customers(df: pd.DataFrame, voice_lookup: dict[str, str]) -> tuple[pd.
             review.append(mapped)
             continue
         if phone in seen:
+            review.append(mapped)
             continue
         seen.add(phone)
         records.append(mapped)
