@@ -118,6 +118,19 @@ def slugify(name: str) -> str:
     return name.replace(" ", "_")
 
 
+def load_voice_model_lookup(path: Path) -> dict[str, str]:
+    """Build phone → voice_model_selection lookup from customers template."""
+    wb = openpyxl.load_workbook(path, read_only=True)
+    ws = wb.worksheets[0]
+    rows = list(ws.iter_rows(values_only=True))
+    wb.close()
+    return {
+        str(row[0]): row[4]
+        for row in rows[1:]
+        if row[0] is not None and row[4] is not None
+    }
+
+
 def build_campaign(df: pd.DataFrame) -> pd.DataFrame:
     records = []
     seen: set[str] = set()
@@ -125,13 +138,14 @@ def build_campaign(df: pd.DataFrame) -> pd.DataFrame:
     for _, row in df.iterrows():
         phone, valid = normalize_phone(row["Números"])
 
-        if valid:
-            if phone in seen:
-                continue
-            seen.add(phone)
+        if not valid:
+            continue
+        if phone in seen:
+            continue
+        seen.add(phone)
 
         records.append({
-            "number":          phone if valid else "review",
+            "number":          phone,
             "nombre_cliente":  f"{row['Nombre']} {row['Apellidos']}",
             "hubspot_deal_id": str(int(row["Negocio ID"])) if pd.notna(row["Negocio ID"]) else "",
         })
@@ -139,24 +153,25 @@ def build_campaign(df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(records)
 
 
-def build_customers(df: pd.DataFrame) -> pd.DataFrame:
+def build_customers(df: pd.DataFrame, voice_lookup: dict[str, str]) -> pd.DataFrame:
     records = []
     seen: set[str] = set()
 
     for _, row in df.iterrows():
         phone, valid = normalize_phone(row["Números"])
 
-        if valid:
-            if phone in seen:
-                continue
-            seen.add(phone)
+        if not valid:
+            continue
+        if phone in seen:
+            continue
+        seen.add(phone)
 
         records.append({
-            "phone":                 phone if valid else "review",
+            "phone":                 phone,
             "firstname":             row["Nombre"],
             "lastname":              row["Apellidos"],
             "email":                 None,
-            "voice_model_selection": row["Nombre del proyecto"],
+            "voice_model_selection": voice_lookup.get(phone),
         })
 
     return pd.DataFrame(records)
@@ -172,14 +187,14 @@ def save_excel(df: pd.DataFrame, path: Path) -> None:
     print(f"  Created: {path.name}  ({len(df)} rows)")
 
 
-def create_outputs(sheets: dict[str, pd.DataFrame]) -> None:
+def create_outputs(sheets: dict[str, pd.DataFrame], voice_lookup: dict[str, str]) -> None:
     OUTPUT_DIR.mkdir(exist_ok=True)
     print(f"=== Checkpoint 2: Building output files in '{OUTPUT_DIR}' ===\n")
 
     for sheet_name, df in sheets.items():
         slug = slugify(sheet_name)
-        save_excel(build_campaign(df),  OUTPUT_DIR / f"campaign_{slug}.xlsx")
-        save_excel(build_customers(df), OUTPUT_DIR / f"customers_{slug}.xlsx")
+        save_excel(build_campaign(df),                   OUTPUT_DIR / f"campaign_{slug}.xlsx")
+        save_excel(build_customers(df, voice_lookup),    OUTPUT_DIR / f"customers_{slug}.xlsx")
 
     print(f"\nDone. Upload the contents of output/ to SharePoint manually.")
 
@@ -191,8 +206,9 @@ def main() -> None:
     read_template_headers(CAMPAIGN_TEMPLATE)
     read_template_headers(CUSTOMERS_TEMPLATE)
 
+    voice_lookup = load_voice_model_lookup(CUSTOMERS_TEMPLATE)
     sheets = validate_fidelity(INPUT_FILE)
-    create_outputs(sheets)
+    create_outputs(sheets, voice_lookup)
 
 
 if __name__ == "__main__":
