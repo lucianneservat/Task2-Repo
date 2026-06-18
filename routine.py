@@ -2,9 +2,9 @@
 Automated routine — Task 2
 1. Reads template files to observe their column structure.
 2. Reads every sheet in Input.xlsx (read fidelity checkpoint).
-3. For each sheet, normalizes phone numbers, de-duplicates, maps columns,
-   and builds two output Excel files. Ambiguous/invalid phones are quarantined
-   to separate .review files.
+3. For each sheet, normalizes phones, silently deduplicates, then builds
+   campaign and customers output files from the same valid row set.
+   Bad-phone rows go to .review files.
 
 Prerequisites:
     pip install openpyxl pandas
@@ -38,6 +38,23 @@ def read_template_headers(path: Path) -> list[str]:
     wb.close()
     print(f"  Template '{path.name}': {headers}")
     return headers
+
+
+def load_voice_model_lookup(path: Path) -> dict[str, str]:
+    """Build normalized_phone → voice_model_selection lookup from customers template."""
+    wb = openpyxl.load_workbook(path, read_only=True)
+    ws = wb.worksheets[0]
+    rows = list(ws.iter_rows(values_only=True))
+    wb.close()
+    lookup = {}
+    for row in rows[1:]:
+        phone_raw, voice = row[0], row[4]
+        if phone_raw is None or voice is None:
+            continue
+        phone, valid = normalize_phone(phone_raw)
+        if valid:
+            lookup[phone] = voice
+    return lookup
 
 
 # ---------------------------------------------------------------------------
@@ -86,13 +103,12 @@ def validate_fidelity(path: Path) -> dict[str, pd.DataFrame]:
 def normalize_phone(raw) -> tuple[str | None, bool]:
     """
     Returns (normalized_digits, valid).
-    Rules:
     - Convert float to int first to avoid '573124457430.0' adding a spurious digit.
     - Strip all non-digit characters.
     - 0057 prefix → strip the leading 00.
     - 12 digits starting with 573 → valid, return as-is.
     - 10 digits starting with 3   → prepend 57, return.
-    - Everything else             → invalid, quarantine to .review.
+    - Everything else             → invalid, route to .review.
     """
     if pd.isna(raw) or str(raw).strip() in ("", "None"):
         return None, False
@@ -115,82 +131,95 @@ def normalize_phone(raw) -> tuple[str | None, bool]:
 
 
 # ---------------------------------------------------------------------------
-# CHECKPOINT 2 — Map columns, normalize phones, build output files
+# CHECKPOINT 2 — Pre-process, map columns, build output files
 # ---------------------------------------------------------------------------
 
 def slugify(name: str) -> str:
     return name.replace(" ", "_")
 
 
-def load_voice_model_lookup(path: Path) -> dict[str, str]:
-    """Build normalized_phone → voice_model_selection lookup from customers template."""
-    wb = openpyxl.load_workbook(path, read_only=True)
-    ws = wb.worksheets[0]
-    rows = list(ws.iter_rows(values_only=True))
-    wb.close()
-    lookup = {}
-    for row in rows[1:]:
-        phone_raw, voice = row[0], row[4]
-        if phone_raw is None or voice is None:
-            continue
-        phone, valid = normalize_phone(phone_raw)
-        if valid:
-            lookup[phone] = voice
-    return lookup
-
-
-def build_campaign(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
-    records, review = [], []
+def preprocess(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Normalize phones and deduplicate (silently drop duplicates).
+    Returns (valid_df, bad_df).
+    Both campaign and customers are built from the same valid_df,
+    guaranteeing equal row counts.
+    """
+    valid_rows, bad_rows = [], []
     seen: set[str] = set()
 
     for _, row in df.iterrows():
         phone, valid = normalize_phone(row["Números"])
-        raw_phone = str(row["Números"]) if pd.notna(row["Números"]) else ""
-        nombre    = str(row["Nombre"])   if pd.notna(row["Nombre"])   else ""
+
+        if not valid:
+            bad_rows.append(row)
+            continue
+
+        if phone in seen:
+            continue  # silently drop duplicate
+
+        seen.add(phone)
+        row = row.copy()
+        row["_phone"] = phone
+        valid_rows.append(row)
+
+    valid_df = pd.DataFrame(valid_rows).reset_index(drop=True) if valid_rows else pd.DataFrame(columns=list(df.columns) + ["_phone"])
+    bad_df   = pd.DataFrame(bad_rows).reset_index(drop=True)   if bad_rows  else pd.DataFrame(columns=list(df.columns))
+    return valid_df, bad_df
+
+
+def build_campaign(valid_df: pd.DataFrame) -> pd.DataFrame:
+    records = []
+    for _, row in valid_df.iterrows():
+        nombre    = str(row["Nombre"])    if pd.notna(row["Nombre"])    else ""
         apellidos = str(row["Apellidos"]) if pd.notna(row["Apellidos"]) else ""
-        mapped = {
-            "number":          phone if valid else raw_phone,
+        records.append({
+            "number":          row["_phone"],
             "nombre_cliente":  f"{nombre} {apellidos}".strip(),
             "hubspot_deal_id": str(int(row["Negocio ID"])) if pd.notna(row["Negocio ID"]) else "",
-        }
-
-        if not valid:
-            review.append(mapped)
-            continue
-        if phone in seen:
-            review.append(mapped)
-            continue
-        seen.add(phone)
-        records.append(mapped)
-
-    return pd.DataFrame(records), pd.DataFrame(review)
+        })
+    return pd.DataFrame(records)
 
 
-def build_customers(df: pd.DataFrame, voice_lookup: dict[str, str]) -> tuple[pd.DataFrame, pd.DataFrame]:
-    records, review = [], []
-    seen: set[str] = set()
-
-    for _, row in df.iterrows():
-        phone, valid = normalize_phone(row["Números"])
-        raw_phone = str(row["Números"]) if pd.notna(row["Números"]) else ""
-        mapped = {
-            "phone":                 phone if valid else raw_phone,
-            "firstname":             row["Nombre"] if pd.notna(row["Nombre"]) else "",
+def build_customers(valid_df: pd.DataFrame, voice_lookup: dict[str, str]) -> pd.DataFrame:
+    records = []
+    for _, row in valid_df.iterrows():
+        records.append({
+            "phone":                 row["_phone"],
+            "firstname":             row["Nombre"]    if pd.notna(row["Nombre"])    else "",
             "lastname":              row["Apellidos"] if pd.notna(row["Apellidos"]) else "",
             "email":                 None,
-            "voice_model_selection": voice_lookup.get(phone) if valid else None,
-        }
+            "voice_model_selection": voice_lookup.get(row["_phone"], "Antioquia"),
+        })
+    return pd.DataFrame(records)
 
-        if not valid:
-            review.append(mapped)
-            continue
-        if phone in seen:
-            review.append(mapped)
-            continue
-        seen.add(phone)
-        records.append(mapped)
 
-    return pd.DataFrame(records), pd.DataFrame(review)
+def build_campaign_review(bad_df: pd.DataFrame) -> pd.DataFrame:
+    records = []
+    for _, row in bad_df.iterrows():
+        nombre    = str(row["Nombre"])    if pd.notna(row["Nombre"])    else ""
+        apellidos = str(row["Apellidos"]) if pd.notna(row["Apellidos"]) else ""
+        raw_phone = str(int(row["Números"])) if isinstance(row["Números"], float) and row["Números"].is_integer() else (str(row["Números"]) if pd.notna(row["Números"]) else "")
+        records.append({
+            "number":          raw_phone,
+            "nombre_cliente":  f"{nombre} {apellidos}".strip(),
+            "hubspot_deal_id": str(int(row["Negocio ID"])) if pd.notna(row["Negocio ID"]) else "",
+        })
+    return pd.DataFrame(records)
+
+
+def build_customers_review(bad_df: pd.DataFrame) -> pd.DataFrame:
+    records = []
+    for _, row in bad_df.iterrows():
+        raw_phone = str(int(row["Números"])) if isinstance(row["Números"], float) and row["Números"].is_integer() else (str(row["Números"]) if pd.notna(row["Números"]) else "")
+        records.append({
+            "phone":                 raw_phone,
+            "firstname":             row["Nombre"]    if pd.notna(row["Nombre"])    else "",
+            "lastname":              row["Apellidos"] if pd.notna(row["Apellidos"]) else "",
+            "email":                 None,
+            "voice_model_selection": None,
+        })
+    return pd.DataFrame(records)
 
 
 def save_excel(df: pd.DataFrame, path: Path) -> None:
@@ -209,17 +238,14 @@ def create_outputs(sheets: dict[str, pd.DataFrame], voice_lookup: dict[str, str]
 
     for sheet_name, df in sheets.items():
         slug = slugify(sheet_name)
+        valid_df, bad_df = preprocess(df)
 
-        campaign_df,  campaign_review  = build_campaign(df)
-        customers_df, customers_review = build_customers(df, voice_lookup)
+        save_excel(build_campaign(valid_df),               OUTPUT_DIR / f"campaign_{slug}.xlsx")
+        save_excel(build_customers(valid_df, voice_lookup), OUTPUT_DIR / f"customers_{slug}.xlsx")
 
-        save_excel(campaign_df,  OUTPUT_DIR / f"campaign_{slug}.xlsx")
-        save_excel(customers_df, OUTPUT_DIR / f"customers_{slug}.xlsx")
-
-        if not campaign_review.empty:
-            save_excel(campaign_review,  OUTPUT_DIR / f"campaign_{slug}.review.xlsx")
-        if not customers_review.empty:
-            save_excel(customers_review, OUTPUT_DIR / f"customers_{slug}.review.xlsx")
+        if not bad_df.empty:
+            save_excel(build_campaign_review(bad_df),  OUTPUT_DIR / f"campaign_{slug}.review.xlsx")
+            save_excel(build_customers_review(bad_df), OUTPUT_DIR / f"customers_{slug}.review.xlsx")
 
     print(f"\nDone. Upload the contents of output/ to SharePoint manually.")
 
